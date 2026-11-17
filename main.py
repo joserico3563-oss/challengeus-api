@@ -1,11 +1,17 @@
+import os
+import re
 import random
 import string
 import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, HTTPException
+import bcrypt
+import jwt
+from fastapi import FastAPI, Depends, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
@@ -30,38 +36,115 @@ app.add_middleware(
 MIN_VENTANA = 60
 OFFSET_POR_DEFECTO = -300
 
+JWT_SECRET = os.getenv("JWT_SECRET", "challengeus-super-secret-jwt-key-2026")
+JWT_DIAS = 30
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+bearer = HTTPBearer(auto_error=False)
+
+def hashear(password):
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verificar(password, hashed):
+    try:
+        return bcrypt.checkpw(password.encode(), hashed.encode())
+    except Exception:
+        return False
+
+def crear_token(usuario_id):
+    payload = {"sub": usuario_id, "exp": datetime.utcnow() + timedelta(days=JWT_DIAS)}
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+def usuario_actual(cred: HTTPAuthorizationCredentials = Security(bearer), db: Session = Depends(get_db)):
+    if cred is None:
+        raise HTTPException(status_code=401, detail="Inicia sesión para continuar.")
+    try:
+        payload = jwt.decode(cred.credentials, JWT_SECRET, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Tu sesión venció. Inicia sesión de nuevo.")
+    usuario = db.query(UsuarioModel).filter(UsuarioModel.id == payload.get("sub")).first()
+    if not usuario:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado.")
+    return usuario
+
+def usuario_dict(u):
+    return {
+        "id": u.id,
+        "displayName": u.display_name,
+        "email": u.email,
+        "xp": u.xp or 0,
+        "coins": u.coins or 0,
+        "streak": u.streak or 0,
+        "bestStreak": u.best_streak or 0,
+        "completedChallenges": u.completed_challenges or 0,
+    }
+
+def buscar_por_email(db, email):
+    return db.query(UsuarioModel).filter(func.lower(UsuarioModel.email) == email).first()
+
+def validar_credenciales(email, password):
+    if not EMAIL_RE.match(email):
+        return "Correo no válido."
+    if len(password) < 6:
+        return "La contraseña debe tener mínimo 6 caracteres."
+    if len(password.encode()) > 72:
+        return "La contraseña es demasiado larga."
+    return None
+
+class RegistroIn(BaseModel):
+    email: str
+    password: str
+    display_name: Optional[str] = None
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
 
 @app.get("/")
 def read_root():
-    return {"message": "API de ChallengeUs operando al 100% (Modo Solitario Activo)"}
+    return {"message": "API de ChallengeUs operando al 100% con JWT"}
+
+
+@app.post("/api/auth/register")
+def registrar(data: RegistroIn, db: Session = Depends(get_db)):
+    email = data.email.strip().lower()
+    error = validar_credenciales(email, data.password)
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+    usuario = buscar_por_email(db, email)
+    nombre = (data.display_name or "").strip() or email.split("@")[0].capitalize()
+    if usuario is None:
+        usuario = UsuarioModel(
+            id=f"u-{uuid.uuid4().hex[:12]}",
+            display_name=nombre[:100],
+            email=email,
+            password_hash=hashear(data.password),
+            xp=0, coins=0, streak=0, best_streak=0, completed_challenges=0,
+        )
+        db.add(usuario)
+    elif not usuario.password_hash:
+        usuario.password_hash = hashear(data.password)
+    else:
+        raise HTTPException(status_code=409, detail="Ya existe una cuenta con ese correo. Inicia sesión.")
+    db.commit()
+    db.refresh(usuario)
+    return {"token": crear_token(usuario.id), "user": usuario_dict(usuario)}
 
 
 @app.post("/api/auth/login")
-def login_usuario(email: str, db: Session = Depends(get_db)):
-    usuario = db.query(UsuarioModel).filter(UsuarioModel.email == email).first()
-    if not usuario:
-        uid = f"u-{email.split('@')[0]}"
-        usuario = UsuarioModel(
-            id=uid,
-            display_name=email.split('@')[0].capitalize(),
-            email=email,
-            xp=0,
-            coins=0,
-            streak=0
+def login_usuario(data: LoginIn, db: Session = Depends(get_db)):
+    email = data.email.strip().lower()
+    usuario = buscar_por_email(db, email)
+    if usuario is None:
+        raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos.")
+    if not usuario.password_hash:
+        raise HTTPException(
+            status_code=403,
+            detail="Esta cuenta es anterior a las contraseñas. Toca «Crear cuenta» con este mismo correo para ponerle una.",
         )
-        db.add(usuario)
-        db.commit()
-        db.refresh(usuario)
-    return {
-        "id": usuario.id,
-        "displayName": usuario.display_name,
-        "email": usuario.email,
-        "xp": usuario.xp,
-        "coins": usuario.coins,
-        "streak": usuario.streak,
-        "bestStreak": usuario.best_streak,
-        "completedChallenges": usuario.completed_challenges
-    }
+    if not verificar(data.password, usuario.password_hash):
+        raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos.")
+    return {"token": crear_token(usuario.id), "user": usuario_dict(usuario)}
 
 
 @app.get("/api/challenges/today")
@@ -105,13 +188,10 @@ def obtener_ranking(db: Session = Depends(get_db)):
 # --- UTILIDADES DE BONCHE ---
 
 def max_ventana(por_dia):
-    # 2 retos: 180 min. Baja 20 min por cada reto extra (5 retos: 120 min).
     return 180 - (por_dia - 2) * 20
-
 
 def offset_de(b):
     return b.tz_offset if b.tz_offset is not None else OFFSET_POR_DEFECTO
-
 
 def a_minutos(hhmm):
     h, m = hhmm.strip().split(":")
@@ -121,10 +201,8 @@ def a_minutos(hhmm):
         raise ValueError("hora fuera de rango")
     return h * 60 + m
 
-
 def lista_horas(raw):
     return [t for t in (raw or "").split(",") if t]
-
 
 def validar_config(por_dia, ventana, horas_raw):
     if por_dia < 2 or por_dia > 5:
@@ -146,7 +224,6 @@ def validar_config(por_dia, ventana, horas_raw):
     horas = [f"{x // 60:02d}:{x % 60:02d}" for x in minutos]
     return None, horas
 
-
 def miembros_de_bonche(db, bonche_id):
     filas = (
         db.query(IntegranteBoncheModel, UsuarioModel)
@@ -158,7 +235,6 @@ def miembros_de_bonche(db, bonche_id):
         {"id": u.id, "name": u.display_name, "xp": u.xp, "streak": u.streak, "role": i.role}
         for i, u in filas
     ]
-
 
 def bonche_dict(db, b):
     return {
@@ -182,29 +258,31 @@ def bonche_dict(db, b):
 class BoncheCreate(BaseModel):
     name: str
     description: str = ""
-    leader_id: str
+    leader_id: Optional[str] = None
 
 
 @app.post("/api/bonches")
-def crear_bonche(bonche: BoncheCreate, db: Session = Depends(get_db)):
+def crear_bonche(bonche: BoncheCreate, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
+    if len(bonche.name.strip()) < 3:
+        raise HTTPException(status_code=400, detail="El nombre debe tener al menos 3 letras.")
     invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
     bonche_id = f"bonche-{uuid.uuid4().hex[:12]}"
 
     nuevo_bonche = BoncheModel(
         id=bonche_id,
-        name=bonche.name,
+        name=bonche.name.strip(),
         description=bonche.description,
         invite_code=invite_code,
-        leader_id=bonche.leader_id,
+        leader_id=yo.id,
         created_at=datetime.utcnow(),
         configured=False
     )
     db.add(nuevo_bonche)
 
     integrante = IntegranteBoncheModel(
-        id=f"int-{bonche_id}-{bonche.leader_id}",
+        id=f"int-{bonche_id}-{yo.id}",
         bonche_id=bonche_id,
-        usuario_id=bonche.leader_id,
+        usuario_id=yo.id,
         role="LEADER",
         joined_at=datetime.utcnow()
     )
@@ -215,8 +293,10 @@ def crear_bonche(bonche: BoncheCreate, db: Session = Depends(get_db)):
 
 
 @app.get("/api/bonches/user/{usuario_id}")
-def obtener_bonches_usuario(usuario_id: str, db: Session = Depends(get_db)):
-    integraciones = db.query(IntegranteBoncheModel).filter(IntegranteBoncheModel.usuario_id == usuario_id).all()
+def obtener_bonches_usuario(usuario_id: str, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
+    if usuario_id != yo.id:
+        raise HTTPException(status_code=403, detail="No puedes ver los bonches de otra persona.")
+    integraciones = db.query(IntegranteBoncheModel).filter(IntegranteBoncheModel.usuario_id == yo.id).all()
     bonches_ids = [i.bonche_id for i in integraciones]
     bonches = db.query(BoncheModel).filter(BoncheModel.id.in_(bonches_ids)).all()
     return [bonche_dict(db, b) for b in bonches]
@@ -224,19 +304,19 @@ def obtener_bonches_usuario(usuario_id: str, db: Session = Depends(get_db)):
 
 class JoinBonche(BaseModel):
     invite_code: str
-    usuario_id: str
+    usuario_id: Optional[str] = None
 
 
 @app.post("/api/bonches/join")
-def unirse_bonche(data: JoinBonche, db: Session = Depends(get_db)):
+def unirse_bonche(data: JoinBonche, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
     bonche = db.query(BoncheModel).filter(BoncheModel.invite_code == data.invite_code.strip().upper()).first()
     if not bonche:
         raise HTTPException(status_code=404, detail="Código de invitación inválido.")
 
     nuevo_integrante = IntegranteBoncheModel(
-        id=f"int-{bonche.id}-{data.usuario_id}",
+        id=f"int-{bonche.id}-{yo.id}",
         bonche_id=bonche.id,
-        usuario_id=data.usuario_id,
+        usuario_id=yo.id,
         role="MEMBER",
         joined_at=datetime.utcnow()
     )
@@ -254,7 +334,7 @@ def unirse_bonche(data: JoinBonche, db: Session = Depends(get_db)):
 # --- CONFIGURACIÓN DEL BONCHE (solo el líder) ---
 
 class BoncheConfig(BaseModel):
-    user_id: str
+    user_id: Optional[str] = None
     name: str
     description: Optional[str] = None
     challenges_per_day: int
@@ -264,11 +344,11 @@ class BoncheConfig(BaseModel):
 
 
 @app.put("/api/bonches/{bonche_id}/config")
-def configurar_bonche(bonche_id: str, data: BoncheConfig, db: Session = Depends(get_db)):
+def configurar_bonche(bonche_id: str, data: BoncheConfig, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
     b = db.query(BoncheModel).filter(BoncheModel.id == bonche_id).first()
     if not b:
         raise HTTPException(status_code=404, detail="Bonche no encontrado.")
-    if b.leader_id != data.user_id:
+    if b.leader_id != yo.id:
         raise HTTPException(status_code=403, detail="Solo el líder puede cambiar la configuración.")
 
     nombre = data.name.strip()
@@ -348,10 +428,18 @@ def generar_retos_del_dia(db, b, fecha, ahora):
 
 
 @app.get("/api/bonches/{bonche_id}/challenges/today")
-def retos_de_hoy_del_bonche(bonche_id: str, db: Session = Depends(get_db)):
+def retos_de_hoy_del_bonche(bonche_id: str, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
     b = db.query(BoncheModel).filter(BoncheModel.id == bonche_id).first()
     if not b:
         raise HTTPException(status_code=404, detail="Bonche no encontrado.")
+    
+    es_miembro = db.query(IntegranteBoncheModel).filter(
+        IntegranteBoncheModel.bonche_id == bonche_id,
+        IntegranteBoncheModel.usuario_id == yo.id,
+    ).first()
+    if not es_miembro:
+        raise HTTPException(status_code=403, detail="No perteneces a este bonche.")
+
     if not b.configured:
         return []
 
@@ -398,19 +486,19 @@ def retos_de_hoy_del_bonche(bonche_id: str, db: Session = Depends(get_db)):
     return salida
 
 
-# --- EVIDENCIAS Y PROCESAMIENTO MODO SOLITARIO ---
+# --- EVIDENCIAS ---
 
 class EvidenciaCreate(BaseModel):
     reto_id: str
-    usuario_id: str
+    usuario_id: Optional[str] = None
     image_url: str
 
 
 @app.post("/api/evidences")
-def enviar_evidencia(evidencia: EvidenciaCreate, db: Session = Depends(get_db)):
+def enviar_evidencia(evidencia: EvidenciaCreate, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
     existente = db.query(EvidenciaModel).filter(
         EvidenciaModel.reto_id == evidencia.reto_id,
-        EvidenciaModel.usuario_id == evidencia.usuario_id
+        EvidenciaModel.usuario_id == yo.id
     ).first()
     if existente:
         raise HTTPException(status_code=400, detail="Ya has enviado una evidencia para este reto.")
@@ -418,7 +506,7 @@ def enviar_evidencia(evidencia: EvidenciaCreate, db: Session = Depends(get_db)):
     nueva_evidencia = EvidenciaModel(
         id=f"ev-{int(datetime.utcnow().timestamp())}",
         reto_id=evidencia.reto_id,
-        usuario_id=evidencia.usuario_id,
+        usuario_id=yo.id,
         image_url=evidencia.image_url,
         status="SUBMITTED",
         submitted_at=datetime.utcnow()
@@ -426,42 +514,3 @@ def enviar_evidencia(evidencia: EvidenciaCreate, db: Session = Depends(get_db)):
     db.add(nueva_evidencia)
     db.commit()
     return {"message": "¡Evidencia enviada correctamente!", "evidenceId": nueva_evidencia.id}
-
-
-@app.post("/api/challenges/{reto_id}/process-cycle")
-def procesar_cierre_ciclo(reto_id: str, db: Session = Depends(get_db)):
-    reto = db.query(RetoModel).filter(RetoModel.id == reto_id).first()
-    if not reto:
-        raise HTTPException(status_code=404, detail="Reto no encontrado.")
-
-    evidencias = db.query(EvidenciaModel).filter(EvidenciaModel.reto_id == reto_id).all()
-    resultados = []
-
-    for ev in evidencias:
-        if ev.rewards_processed:
-            continue
-
-        aprobada = True
-        usuario = db.query(UsuarioModel).filter(UsuarioModel.id == ev.usuario_id).first()
-        recompensas_otorgadas = False
-        if usuario:
-            usuario.completed_challenges += 1
-            usuario.xp += reto.xp_reward
-            usuario.coins += reto.coin_reward
-            recompensas_otorgadas = True
-
-        ev.rewards_processed = True
-        ev.status = "APPROVED"
-        ev.image_url = "[CONTENIDO_FOTOGRAFICO_ELIMINADO]"
-        ev.file_deleted_at = datetime.utcnow()
-
-        resultados.append({
-            "evidenceId": ev.id,
-            "userId": ev.usuario_id,
-            "status": ev.status,
-            "approved": aprobada,
-            "rewardsAwarded": recompensas_otorgadas
-        })
-
-    db.commit()
-    return {"message": "¡Ciclo procesado en modo solitario con éxito!", "results": resultados}
