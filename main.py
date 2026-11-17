@@ -1,4 +1,5 @@
 import random
+import uuid
 import string
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException
@@ -99,7 +100,7 @@ class BoncheCreate(BaseModel):
 @app.post("/api/bonches")
 def crear_bonche(bonche: BoncheCreate, db: Session = Depends(get_db)):
     invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    bonche_id = f"bonche-{int(datetime.utcnow().timestamp())}"
+    bonche_id = f"bonche-{uuid.uuid4().hex[:12]}"
 
     nuevo_bonche = BoncheModel(
         id=bonche_id,
@@ -123,6 +124,17 @@ def crear_bonche(bonche: BoncheCreate, db: Session = Depends(get_db)):
 
     return {"message": "¡Bonche creado exitosamente! 🛡️", "boncheId": bonche_id, "inviteCode": invite_code}
 
+def miembros_de_bonche(db, bonche_id):
+    filas = (
+        db.query(IntegranteBoncheModel, UsuarioModel)
+        .join(UsuarioModel, UsuarioModel.id == IntegranteBoncheModel.usuario_id)
+        .filter(IntegranteBoncheModel.bonche_id == bonche_id)
+        .all()
+    )
+    return [
+        {"id": u.id, "name": u.display_name, "xp": u.xp, "streak": u.streak, "role": i.role}
+        for i, u in filas
+    ]
 @app.get("/api/bonches/user/{usuario_id}")
 def obtener_bonches_usuario(usuario_id: str, db: Session = Depends(get_db)):
     integraciones = db.query(IntegranteBoncheModel).filter(IntegranteBoncheModel.usuario_id == usuario_id).all()
@@ -134,7 +146,7 @@ def obtener_bonches_usuario(usuario_id: str, db: Session = Depends(get_db)):
             "name": b.name,
             "description": b.description,
             "inviteCode": b.invite_code,
-            "leaderId": b.leader_id
+            "leaderId": b.leader_id, "createdAt": (b.created_at.isoformat() + "Z") if b.created_at else None, "members": miembros_de_bonche(db, b.id)
         } for b in bonches
     ]
 
@@ -144,7 +156,7 @@ class JoinBonche(BaseModel):
 
 @app.post("/api/bonches/join")
 def unirse_bonche(data: JoinBonche, db: Session = Depends(get_db)):
-    bonche = db.query(BoncheModel).filter(BoncheModel.invite_code == data.invite_code).first()
+    bonche = db.query(BoncheModel).filter(BoncheModel.invite_code == data.invite_code.strip().upper()).first()
     if not bonche:
         raise HTTPException(status_code=404, detail="Código de invitación inválido.")
 
