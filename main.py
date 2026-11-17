@@ -35,9 +35,9 @@ def login_usuario(email: str, db: Session = Depends(get_db)):
             id=uid,
             display_name=email.split('@')[0].capitalize(),
             email=email,
-            xp=85,
-            coins=120,
-            streak=4
+            xp=0,
+            coins=0,
+            streak=0
         )
         db.add(usuario)
         db.commit()
