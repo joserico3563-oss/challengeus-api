@@ -50,6 +50,11 @@ class BoncheModel(Base):
     description = Column(Text, nullable=True)
     invite_code = Column(String(20), unique=True, index=True, nullable=False)
     leader_id = Column(String(50), ForeignKey("usuarios.id"), nullable=False)
+    challenges_per_day = Column(Integer, default=3)
+    window_minutes = Column(Integer, default=90)
+    schedule_times = Column(String(100), default='10:00,15:30,20:00')
+    tz_offset = Column(Integer, default=-300)
+    configured = Column(Boolean, default=False)
     created_at = Column(DateTime, nullable=False)
 
 class IntegranteBoncheModel(Base):
@@ -102,6 +107,19 @@ class ParticipacionVotacionModel(Base):
         UniqueConstraint('reto_id', 'usuario_id', name='uq_reto_usuario_participacion'),
     )
 
+class BoncheRetoModel(Base):
+    __tablename__ = "bonche_retos"
+    id = Column(String(120), primary_key=True, index=True)
+    bonche_id = Column(String(50), ForeignKey("bonches.id"), nullable=False, index=True)
+    reto_id = Column(String(50), ForeignKey("retos.id"), nullable=False)
+    fecha = Column(String(10), nullable=False)
+    slot = Column(Integer, nullable=False)
+    starts_at = Column(DateTime, nullable=False)
+    ends_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('bonche_id', 'fecha', 'slot', name='uq_bonche_fecha_slot'),
+    )
 def inicializar_base_de_datos():
     print("Actualizando tablas de Bonches e Integrantes en Aiven...")
     Base.metadata.create_all(bind=engine)
