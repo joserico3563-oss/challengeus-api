@@ -77,6 +77,11 @@ class EvidenciaModel(Base):
     image_url = Column(Text, nullable=False)
     status = Column(String(30), default="SUBMITTED")
     submitted_at = Column(DateTime, nullable=False)
+    # Reto concreto del bonche (el slot del dia). Permite aislar evidencias
+    # entre grupos que ese mismo dia recibieron el mismo reto del catalogo.
+    bonche_reto_id = Column(String(120), ForeignKey("bonche_retos.id"), nullable=True)
+    # Referencia en Cloudinary para poder borrar el archivo al cerrar el reto.
+    cloudinary_public_id = Column(String(255), nullable=True)
     file_deleted_at = Column(DateTime, nullable=True)
     approval_percentage = Column(Integer, default=0)
     positive_votes = Column(Integer, default=0)

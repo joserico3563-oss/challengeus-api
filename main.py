@@ -8,7 +8,8 @@ from typing import List, Optional
 
 import bcrypt
 import jwt
-from fastapi import FastAPI, Depends, HTTPException, Security
+from fastapi import FastAPI, Depends, HTTPException, Security, UploadFile, File, Form
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import func
@@ -488,29 +489,141 @@ def retos_de_hoy_del_bonche(bonche_id: str, yo: UsuarioModel = Depends(usuario_a
 
 # --- EVIDENCIAS ---
 
-class EvidenciaCreate(BaseModel):
-    reto_id: str
-    usuario_id: Optional[str] = None
-    image_url: str
+MAX_FOTO_BYTES = 8 * 1024 * 1024  # 8 MB
+CARPETA_CLOUDINARY = "challengeus/evidencias"
+
+
+def tipo_de_imagen(contenido: bytes):
+    """Detecta el formato real por los primeros bytes, no por lo que diga el cliente."""
+    if contenido.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if contenido.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if contenido[:4] == b"RIFF" and contenido[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def cloudinary_configurado():
+    return all(os.getenv(clave) for clave in (
+        "CLOUDINARY_CLOUD_NAME",
+        "CLOUDINARY_API_KEY",
+        "CLOUDINARY_API_SECRET",
+    ))
+
+
+def subir_a_cloudinary(contenido, evidencia_id):
+    """Sube la foto y devuelve el resultado de Cloudinary.
+
+    Se ejecuta en un hilo aparte porque el SDK es bloqueante.
+    """
+    import cloudinary
+    import cloudinary.uploader
+
+    cloudinary.config(
+        cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+        api_key=os.getenv("CLOUDINARY_API_KEY"),
+        api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+        secure=True,
+    )
+    return cloudinary.uploader.upload(
+        contenido,
+        folder=CARPETA_CLOUDINARY,
+        public_id=evidencia_id,
+        resource_type="image",
+        overwrite=True,
+        tags=["temporal", "challengeus"],
+    )
 
 
 @app.post("/api/evidences")
-def enviar_evidencia(evidencia: EvidenciaCreate, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
+async def enviar_evidencia(
+    file: UploadFile = File(...),
+    bonche_reto_id: str = Form(...),
+    yo: UsuarioModel = Depends(usuario_actual),
+    db: Session = Depends(get_db),
+):
+    """Recibe la fotografía de la evidencia y la guarda en Cloudinary.
+
+    El usuario sale del JWT (nunca de lo que mande el cliente) y el reto se
+    resuelve desde el slot del bonche, así no se puede enviar evidencia a un
+    reto de otro grupo.
+    """
+    slot = db.query(BoncheRetoModel).filter(BoncheRetoModel.id == bonche_reto_id).first()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Reto no encontrado.")
+
+    es_miembro = db.query(IntegranteBoncheModel).filter(
+        IntegranteBoncheModel.bonche_id == slot.bonche_id,
+        IntegranteBoncheModel.usuario_id == yo.id,
+    ).first()
+    if not es_miembro:
+        raise HTTPException(status_code=403, detail="No perteneces a este bonche.")
+
+    ahora = datetime.utcnow()
+    if ahora < slot.starts_at:
+        raise HTTPException(status_code=400, detail="Este reto todavía no empieza.")
+    if ahora >= slot.ends_at:
+        raise HTTPException(status_code=400, detail="El plazo para enviar la evidencia ya cerró.")
+
     existente = db.query(EvidenciaModel).filter(
-        EvidenciaModel.reto_id == evidencia.reto_id,
-        EvidenciaModel.usuario_id == yo.id
+        EvidenciaModel.bonche_reto_id == slot.id,
+        EvidenciaModel.usuario_id == yo.id,
     ).first()
     if existente:
-        raise HTTPException(status_code=400, detail="Ya has enviado una evidencia para este reto.")
+        raise HTTPException(status_code=400, detail="Ya enviaste tu evidencia para este reto.")
 
-    nueva_evidencia = EvidenciaModel(
-        id=f"ev-{int(datetime.utcnow().timestamp())}",
-        reto_id=evidencia.reto_id,
-        usuario_id=yo.id,
-        image_url=evidencia.image_url,
-        status="SUBMITTED",
-        submitted_at=datetime.utcnow()
-    )
-    db.add(nueva_evidencia)
-    db.commit()
-    return {"message": "¡Evidencia enviada correctamente!", "evidenceId": nueva_evidencia.id}
+    if not cloudinary_configurado():
+        raise HTTPException(
+            status_code=503,
+            detail="El almacenamiento de fotos no está configurado en el servidor.",
+        )
+
+    contenido = await file.read()
+    if not contenido:
+        raise HTTPException(status_code=400, detail="El archivo llegó vacío.")
+    if len(contenido) > MAX_FOTO_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="La foto pesa más de 8 MB. Toma una con menos resolución.",
+        )
+    if tipo_de_imagen(contenido) is None:
+        raise HTTPException(status_code=400, detail="El archivo no es una imagen válida (JPEG, PNG o WebP).")
+
+    evidencia_id = f"ev-{uuid.uuid4().hex[:16]}"
+    try:
+        subida = await run_in_threadpool(subir_a_cloudinary, contenido, evidencia_id)
+    except Exception:
+        raise HTTPException(status_code=502, detail="No pudimos guardar la foto. Inténtalo de nuevo.")
+
+    try:
+        nueva = EvidenciaModel(
+            id=evidencia_id,
+            reto_id=slot.reto_id,
+            bonche_reto_id=slot.id,
+            usuario_id=yo.id,
+            image_url=subida["secure_url"],
+            cloudinary_public_id=subida["public_id"],
+            status="SUBMITTED",
+            submitted_at=ahora,
+        )
+        db.add(nueva)
+        db.commit()
+    except Exception:
+        db.rollback()
+        # Si la base falla, no dejamos la foto huérfana en Cloudinary.
+        try:
+            import cloudinary.uploader
+            cloudinary.uploader.destroy(subida["public_id"])
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="No pudimos registrar tu evidencia.")
+
+    return {
+        "message": "Evidencia enviada. Espera la votación de tus vales.",
+        "evidenceId": nueva.id,
+        "imageUrl": nueva.image_url,
+        "status": nueva.status,
+        "retoId": slot.reto_id,
+        "boncheRetoId": slot.id,
+    }
