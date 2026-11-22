@@ -561,6 +561,11 @@ async def enviar_evidencia(
         raise HTTPException(status_code=403, detail="No perteneces a este bonche.")
 
     ahora = datetime.utcnow()
+    if es_miembro.joined_at and es_miembro.joined_at > slot.starts_at:
+        raise HTTPException(
+            status_code=403,
+            detail="Entraste al bonche despu\u00e9s de que empez\u00f3 este reto. Participas desde el siguiente.",
+        )
     if ahora < slot.starts_at:
         raise HTTPException(status_code=400, detail="Este reto todavía no empieza.")
     if ahora >= slot.ends_at:
@@ -579,7 +584,20 @@ async def enviar_evidencia(
             detail="El almacenamiento de fotos no está configurado en el servidor.",
         )
 
-    contenido = await file.read()
+    partes = []
+    total_bytes = 0
+    while True:
+        bloque = await file.read(1024 * 1024)
+        if not bloque:
+            break
+        total_bytes += len(bloque)
+        if total_bytes > MAX_FOTO_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="La foto pesa más de 8 MB. Toma una con menos resolución.",
+            )
+        partes.append(bloque)
+    contenido = b"".join(partes)
     if not contenido:
         raise HTTPException(status_code=400, detail="El archivo llegó vacío.")
     if len(contenido) > MAX_FOTO_BYTES:
@@ -627,3 +645,7 @@ async def enviar_evidencia(
         "retoId": slot.reto_id,
         "boncheRetoId": slot.id,
     }
+
+# --- LA RECOCHA: votaciones, recompensas, tienda e inventario (larecocha.py) ---
+from larecocha import registrar_rutas
+registrar_rutas(app, usuario_actual, get_db, usuario_dict)
