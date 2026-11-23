@@ -763,7 +763,7 @@ def registrar_rutas(app, usuario_actual, get_db, usuario_dict):
             )
             if res.rowcount != 1:
                 db.rollback()
-                raise HTTPException(status_code=402, detail="No te alcanzan las monedas.")
+                raise HTTPException(status_code=402, detail="No te alcanzan las Barras.")
             inv_id = f"inv-{uid}-{item.id}"[:120]
             if item.one_time:
                 db.execute(

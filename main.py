@@ -665,3 +665,7 @@ async def enviar_evidencia(
 # --- LA RECOCHA: votaciones, recompensas, tienda e inventario (larecocha.py) ---
 from larecocha import registrar_rutas
 registrar_rutas(app, usuario_actual, get_db, usuario_dict)
+
+# --- LA RECOCHA: centro de notificaciones internas (notificaciones.py) ---
+from notificaciones import registrar_rutas_notificaciones
+registrar_rutas_notificaciones(app, usuario_actual, get_db)

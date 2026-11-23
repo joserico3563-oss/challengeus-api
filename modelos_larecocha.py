@@ -56,3 +56,30 @@ class InventarioModel(Base):
     __table_args__ = (
         UniqueConstraint("usuario_id", "item_id", name="uq_inventario_usuario_item"),
     )
+
+
+class NotificacionModel(Base):
+    """Notificacion interna (LA_RECOCHA_ENTREGA_FINAL).
+
+    `clave` + `usuario_id` son unicos: evita duplicados al sincronizar.
+    `push_estado` / `push_enviada_at` quedan listos para futuras push.
+    """
+    __tablename__ = "notificaciones"
+    id = Column(String(120), primary_key=True)
+    usuario_id = Column(String(50), ForeignKey("usuarios.id"), nullable=False, index=True)
+    bonche_id = Column(String(50), ForeignKey("bonches.id"), nullable=True, index=True)
+    tipo = Column(String(40), nullable=False)
+    titulo = Column(String(150), nullable=False)
+    mensaje = Column(Text, nullable=True)
+    ref_tipo = Column(String(30), nullable=True)
+    ref_id = Column(String(120), nullable=True)
+    clave = Column(String(160), nullable=False)
+    leida = Column(Boolean, nullable=False, default=False)
+    leida_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    push_estado = Column(String(20), nullable=False, default="NO_ENVIADA")
+    push_enviada_at = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("usuario_id", "clave", name="uq_notificacion_usuario_clave"),
+    )
