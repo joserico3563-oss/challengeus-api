@@ -571,12 +571,27 @@ async def enviar_evidencia(
     if ahora >= slot.ends_at:
         raise HTTPException(status_code=400, detail="El plazo para enviar la evidencia ya cerró.")
 
-    existente = db.query(EvidenciaModel).filter(
-        EvidenciaModel.bonche_reto_id == slot.id,
-        EvidenciaModel.usuario_id == yo.id,
-    ).first()
-    if existente:
-        raise HTTPException(status_code=400, detail="Ya enviaste tu evidencia para este reto.")
+    previas = sorted(
+        db.query(EvidenciaModel).filter(
+            EvidenciaModel.bonche_reto_id == slot.id,
+            EvidenciaModel.usuario_id == yo.id,
+        ).all(),
+        key=lambda e: e.attempt or 1,
+    )
+    intento = 1
+    if previas:
+        ultima = previas[-1]
+        if len(previas) >= 2:
+            raise HTTPException(status_code=400, detail="Ya usaste tus dos intentos para este reto.")
+        if ultima.status == "REJECTED":
+            intento = 2
+        elif ultima.status == "APPROVED":
+            raise HTTPException(status_code=400, detail="Tu evidencia ya fue aprobada.")
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Tu evidencia sigue en votaci\u00f3n. Si la rechazan, podr\u00e1s enviar una segunda.",
+            )
 
     if not cloudinary_configurado():
         raise HTTPException(
@@ -620,6 +635,7 @@ async def enviar_evidencia(
             reto_id=slot.reto_id,
             bonche_reto_id=slot.id,
             usuario_id=yo.id,
+            attempt=intento,
             image_url=subida["secure_url"],
             cloudinary_public_id=subida["public_id"],
             status="SUBMITTED",

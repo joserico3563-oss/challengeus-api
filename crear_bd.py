@@ -80,6 +80,8 @@ class EvidenciaModel(Base):
     # Reto concreto del bonche (el slot del dia). Permite aislar evidencias
     # entre grupos que ese mismo dia recibieron el mismo reto del catalogo.
     bonche_reto_id = Column(String(120), ForeignKey("bonche_retos.id"), nullable=True)
+    # Numero de intento (1 o 2). La 2a evidencia solo se permite si la 1a fue rechazada.
+    attempt = Column(Integer, nullable=False, default=1)
     # Referencia en Cloudinary para poder borrar el archivo al cerrar el reto.
     cloudinary_public_id = Column(String(255), nullable=True)
     file_deleted_at = Column(DateTime, nullable=True)
