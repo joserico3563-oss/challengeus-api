@@ -68,15 +68,15 @@ def resolver_evidencia(db, ev, slot, forzar):
         return False
     elegibles = votantes_elegibles(db, slot) - {ev.usuario_id}
     votos = db.query(VotacionModel).filter(VotacionModel.evidencia_id == ev.id).all()
-    validos = [v for v in votos if v.usuario_id in elegibles]
+    validos = [v for v in votos if v.usuario_id != ev.usuario_id]
     votantes = {v.usuario_id for v in validos}
-    completo = len(elegibles) == 0 or len(votantes) >= len(elegibles)
+    completo = elegibles.issubset(votantes)
     if not completo and not forzar:
         return False
 
     positivos = sum(1 for v in validos if v.decision)
     negativos = len(validos) - positivos
-    if len(elegibles) == 0:
+    if len(elegibles) == 0 and not validos:
         estado, pct = "APPROVED", 100
     elif not validos:
         estado, pct = "NO_VOTES", 0
@@ -213,10 +213,11 @@ def procesar_slot(db, slot, ahora=None):
         if estado_ev not in ("APPROVED", "NO_VOTES"):
             registrar_recompensa(db, slot_id, uid, evid, "RECHAZADA", 0, 0)
             continue
-        if uid in elegibles:
-            debe = {eid for eid, dueno in duenos.items() if dueno != uid}
-        else:
-            debe = set()
+        if uid not in elegibles:
+            registrar_recompensa(db, slot_id, uid, evid, "INCUMPLIDA", 0, 0)
+            continue
+
+        debe = {eid for eid, dueno in duenos.items() if dueno != uid}
         if not debe.issubset(hechos.get(uid, set())):
             registrar_recompensa(db, slot_id, uid, evid, "INCUMPLIDA", 0, 0)
             continue

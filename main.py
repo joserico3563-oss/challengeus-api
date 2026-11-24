@@ -403,34 +403,46 @@ def salir_bonche(
 
     ahora = datetime.utcnow()
 
-    activo = db.query(BoncheRetoModel.id).filter(
-        BoncheRetoModel.bonche_id == bonche_id,
-        BoncheRetoModel.starts_at <= ahora,
-        BoncheRetoModel.ends_at > ahora - VENTANA_VOTO_EXTRA
-    ).first()
-
-    if activo:
-        raise HTTPException(
-            409,
-            "Espera a que termine el reto y su periodo de votacion para salir del Bonche."
-        )
-
-    pendiente = db.query(EvidenciaModel.id).join(
+    evidencias_propias = db.query(EvidenciaModel).join(
         BoncheRetoModel,
-        BoncheRetoModel.id == EvidenciaModel.bonche_reto_id
+        BoncheRetoModel.id == EvidenciaModel.bonche_reto_id,
     ).filter(
         BoncheRetoModel.bonche_id == bonche_id,
-        (
-            (EvidenciaModel.status == "SUBMITTED")
-            | sin_resultado
-        )
-    ).first()
+        EvidenciaModel.usuario_id == uid,
+        sin_resultado,
+    ).order_by(
+        EvidenciaModel.attempt.desc()
+    ).with_for_update().all()
 
-    if pendiente:
-        raise HTTPException(
-            409,
-            "Todavia hay evidencias o recompensas pendientes. Intentalo nuevamente."
-        )
+    cancelados = set()
+
+    for ev in evidencias_propias:
+        sid = ev.bonche_reto_id
+        if sid in cancelados:
+            continue
+
+        try:
+            with db.begin_nested():
+                db.add(RecompensaModel(
+                    id=f"rc-{uuid.uuid4().hex[:20]}",
+                    bonche_reto_id=sid,
+                    usuario_id=uid,
+                    evidencia_id=ev.id,
+                    estado="INCUMPLIDA",
+                    xp=0,
+                    coins=0,
+                    visto=True,
+                    created_at=ahora,
+                ))
+                db.flush()
+        except IntegrityError:
+            existente = db.query(RecompensaModel.id).filter(
+                RecompensaModel.bonche_reto_id == sid,
+                RecompensaModel.usuario_id == uid,
+            ).with_for_update().first()
+            if existente is None:
+                raise
+        cancelados.add(sid)
 
     nuevo_lider = None
 
@@ -847,6 +859,21 @@ async def enviar_evidencia(
         raise HTTPException(status_code=502, detail="No pudimos guardar la foto. Inténtalo de nuevo.")
 
     try:
+        db.rollback()
+
+        grupo_actual = db.query(BoncheModel).filter(
+            BoncheModel.id == slot.bonche_id
+        ).with_for_update().first()
+
+        miembro_actual = db.query(IntegranteBoncheModel).filter(
+            IntegranteBoncheModel.bonche_id == slot.bonche_id,
+            IntegranteBoncheModel.usuario_id == yo.id,
+            IntegranteBoncheModel.joined_at <= slot.starts_at,
+        ).with_for_update().first()
+
+        if grupo_actual is None or miembro_actual is None:
+            raise HTTPException(403, "Ya no participas en este reto.")
+
         nueva = EvidenciaModel(
             id=evidencia_id,
             reto_id=slot.reto_id,
@@ -860,7 +887,7 @@ async def enviar_evidencia(
         )
         db.add(nueva)
         db.commit()
-    except Exception:
+    except Exception as error:
         db.rollback()
         # Si la base falla, no dejamos la foto huérfana en Cloudinary.
         try:
@@ -868,6 +895,8 @@ async def enviar_evidencia(
             cloudinary.uploader.destroy(subida["public_id"])
         except Exception:
             pass
+        if isinstance(error, HTTPException):
+            raise error
         raise HTTPException(status_code=500, detail="No pudimos registrar tu evidencia.")
 
     return {
