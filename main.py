@@ -321,6 +321,140 @@ class BoncheConfig(BaseModel):
 
 
 
+
+@app.post("/api/bonches/{bonche_id}/leave")
+def salir_bonche(
+    bonche_id: str,
+    yo: UsuarioModel = Depends(usuario_actual),
+    db: Session = Depends(get_db),
+):
+    from larecocha import VENTANA_VOTO_EXTRA, procesar_slot
+    from modelos_larecocha import NotificacionModel, RecompensaModel
+
+    uid = yo.id
+
+    pertenece = db.query(IntegranteBoncheModel.id).filter(
+        IntegranteBoncheModel.bonche_id == bonche_id,
+        IntegranteBoncheModel.usuario_id == uid,
+    ).first()
+
+    if not pertenece:
+        raise HTTPException(403, "No perteneces a este Bonche.")
+
+    sin_resultado = ~db.query(RecompensaModel.id).filter(
+        RecompensaModel.bonche_reto_id == EvidenciaModel.bonche_reto_id,
+        RecompensaModel.usuario_id == EvidenciaModel.usuario_id,
+    ).exists()
+
+    ahora = datetime.utcnow()
+
+    pendientes = db.query(BoncheRetoModel.id).join(
+        EvidenciaModel,
+        EvidenciaModel.bonche_reto_id == BoncheRetoModel.id,
+    ).filter(
+        BoncheRetoModel.bonche_id == bonche_id,
+        BoncheRetoModel.ends_at <= ahora - VENTANA_VOTO_EXTRA,
+        sin_resultado,
+    ).distinct().all()
+
+    for (sid,) in pendientes:
+        slot = db.query(BoncheRetoModel).filter(
+            BoncheRetoModel.id == sid
+        ).first()
+
+        if slot is not None:
+            procesar_slot(db, slot, ahora)
+
+    db.commit()
+
+    bonche = db.query(BoncheModel).filter(
+        BoncheModel.id == bonche_id
+    ).with_for_update().first()
+
+    if not bonche:
+        raise HTTPException(404, "Bonche no encontrado.")
+
+    miembros = db.query(IntegranteBoncheModel).filter(
+        IntegranteBoncheModel.bonche_id == bonche_id
+    ).order_by(
+        IntegranteBoncheModel.joined_at.asc(),
+        IntegranteBoncheModel.id.asc()
+    ).with_for_update().all()
+
+    integrante = next(
+        (m for m in miembros if m.usuario_id == uid),
+        None
+    )
+
+    if integrante is None:
+        raise HTTPException(403, "No perteneces a este Bonche.")
+
+    restantes = [
+        m for m in miembros if m.usuario_id != uid
+    ]
+
+    es_lider = bonche.leader_id == uid
+
+    if es_lider and not restantes:
+        raise HTTPException(
+            400,
+            "Eres el unico integrante. Puedes eliminar el Bonche."
+        )
+
+    ahora = datetime.utcnow()
+
+    activo = db.query(BoncheRetoModel.id).filter(
+        BoncheRetoModel.bonche_id == bonche_id,
+        BoncheRetoModel.starts_at <= ahora,
+        BoncheRetoModel.ends_at > ahora - VENTANA_VOTO_EXTRA
+    ).first()
+
+    if activo:
+        raise HTTPException(
+            409,
+            "Espera a que termine el reto y su periodo de votacion para salir del Bonche."
+        )
+
+    pendiente = db.query(EvidenciaModel.id).join(
+        BoncheRetoModel,
+        BoncheRetoModel.id == EvidenciaModel.bonche_reto_id
+    ).filter(
+        BoncheRetoModel.bonche_id == bonche_id,
+        (
+            (EvidenciaModel.status == "SUBMITTED")
+            | sin_resultado
+        )
+    ).first()
+
+    if pendiente:
+        raise HTTPException(
+            409,
+            "Todavia hay evidencias o recompensas pendientes. Intentalo nuevamente."
+        )
+
+    nuevo_lider = None
+
+    if es_lider:
+        sucesor = restantes[0]
+        sucesor.role = "LEADER"
+        bonche.leader_id = sucesor.usuario_id
+        nuevo_lider = sucesor.usuario_id
+
+    db.query(NotificacionModel).filter(
+        NotificacionModel.bonche_id == bonche_id,
+        NotificacionModel.usuario_id == uid
+    ).delete(synchronize_session=False)
+
+    db.delete(integrante)
+    db.commit()
+
+    return {
+        "ok": True,
+        "newLeaderId": nuevo_lider,
+        "message": "Has salido del Bonche."
+    }
+
+
 @app.delete("/api/bonches/{bonche_id}")
 def eliminar_bonche(
     bonche_id: str,
