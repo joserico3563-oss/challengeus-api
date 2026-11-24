@@ -2,3 +2,21 @@
 __pycache__/
 *.pyc
 venv/
+# Seguridad y archivos locales
+.env
+.env.*
+!.env.example
+*.bak
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+*.pem
+key.properties
+*.exe
+frontend_dump.txt
+/Set-Location
+/ersUserchallenge_us*
+
+/volcado_api.txt

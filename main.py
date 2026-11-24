@@ -148,42 +148,8 @@ def login_usuario(data: LoginIn, db: Session = Depends(get_db)):
     return {"token": crear_token(usuario.id), "user": usuario_dict(usuario)}
 
 
-@app.get("/api/challenges/today")
-def obtener_retos_hoy(db: Session = Depends(get_db)):
-    retos = db.query(RetoModel).all()
-    return [
-        {
-            "id": r.id,
-            "title": r.title,
-            "objective": r.objective,
-            "description": r.description,
-            "category": r.category,
-            "difficulty": r.difficulty,
-            "evidenceType": r.evidence_type,
-            "points": r.points,
-            "xpReward": r.xp_reward,
-            "coinReward": r.coin_reward,
-            "startsAt": r.starts_at.isoformat() if r.starts_at else None,
-            "endsAt": r.ends_at.isoformat() if r.ends_at else None,
-            "completedBy": r.completed_by,
-            "totalMembers": r.total_members
-        } for r in retos
-    ]
 
 
-@app.get("/api/ranking")
-def obtener_ranking(db: Session = Depends(get_db)):
-    usuarios = db.query(UsuarioModel).order_by(UsuarioModel.xp.desc()).limit(10).all()
-    return [
-        {
-            "id": u.id,
-            "displayName": u.display_name,
-            "xp": u.xp,
-            "coins": u.coins,
-            "streak": u.streak,
-            "completedChallenges": u.completed_challenges
-        } for u in usuarios
-    ]
 
 
 # --- UTILIDADES DE BONCHE ---
@@ -233,7 +199,14 @@ def miembros_de_bonche(db, bonche_id):
         .all()
     )
     return [
-        {"id": u.id, "name": u.display_name, "xp": u.xp, "streak": u.streak, "role": i.role}
+        {
+            "id": u.id,
+            "name": u.display_name,
+            "xp": u.xp,
+            "streak": u.streak,
+            "role": i.role,
+            "completedChallenges": u.completed_challenges or 0,
+        }
         for i, u in filas
     ]
 
