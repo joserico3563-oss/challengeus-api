@@ -37,7 +37,9 @@ app.add_middleware(
 MIN_VENTANA = 60
 OFFSET_POR_DEFECTO = -300
 
-JWT_SECRET = os.getenv("JWT_SECRET", "challengeus-super-secret-jwt-key-2026")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET no configurado.")
 JWT_DIAS = 30
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 bearer = HTTPBearer(auto_error=False)
@@ -315,6 +317,114 @@ class BoncheConfig(BaseModel):
     window_minutes: int
     times: List[str]
     tz_offset: int
+
+
+
+
+@app.delete("/api/bonches/{bonche_id}")
+def eliminar_bonche(
+    bonche_id: str,
+    yo: UsuarioModel = Depends(usuario_actual),
+    db: Session = Depends(get_db),
+):
+    from modelos_larecocha import RecompensaModel, NotificacionModel
+    from larecocha import borrar_foto
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    bonche = db.query(BoncheModel).filter(
+        BoncheModel.id == bonche_id
+    ).with_for_update().first()
+
+    if not bonche:
+        raise HTTPException(
+            status_code=404,
+            detail="Bonche no encontrado."
+        )
+
+    if bonche.leader_id != yo.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Solo el lider puede eliminar el Bonche."
+        )
+
+    fotos = set()
+
+    try:
+        slots = [
+            fila[0] for fila in db.query(BoncheRetoModel.id).filter(
+                BoncheRetoModel.bonche_id == bonche_id
+            ).all()
+        ]
+
+        if slots:
+            evidencias = db.query(EvidenciaModel).filter(
+                EvidenciaModel.bonche_reto_id.in_(slots)
+            ).all()
+
+            evidencia_ids = [ev.id for ev in evidencias]
+
+            for ev in evidencias:
+                if ev.cloudinary_public_id and not ev.file_deleted_at:
+                    fotos.add(ev.cloudinary_public_id)
+
+            if evidencia_ids:
+                db.query(VotacionModel).filter(
+                    VotacionModel.evidencia_id.in_(evidencia_ids)
+                ).delete(synchronize_session=False)
+
+            db.query(RecompensaModel).filter(
+                RecompensaModel.bonche_reto_id.in_(slots)
+            ).delete(synchronize_session=False)
+
+            db.query(EvidenciaModel).filter(
+                EvidenciaModel.bonche_reto_id.in_(slots)
+            ).delete(synchronize_session=False)
+
+            db.query(BoncheRetoModel).filter(
+                BoncheRetoModel.bonche_id == bonche_id
+            ).delete(synchronize_session=False)
+
+        db.query(NotificacionModel).filter(
+            NotificacionModel.bonche_id == bonche_id
+        ).delete(synchronize_session=False)
+
+        db.query(IntegranteBoncheModel).filter(
+            IntegranteBoncheModel.bonche_id == bonche_id
+        ).delete(synchronize_session=False)
+
+        # No borrar archivos que otras evidencias puedan compartir.
+        fotos = {
+            foto for foto in fotos
+            if not db.query(EvidenciaModel.id).filter(
+                EvidenciaModel.cloudinary_public_id == foto
+            ).first()
+        }
+
+        db.delete(bonche)
+        db.commit()
+
+    except Exception:
+        db.rollback()
+        logger.exception("Error eliminando Bonche")
+        raise HTTPException(
+            status_code=500,
+            detail="No pudimos eliminar el Bonche."
+        )
+
+    # Limpiar Cloudinary solo despues de confirmar la eliminacion.
+    if cloudinary_configurado():
+        for foto in fotos:
+            try:
+                borrar_foto(foto)
+            except Exception:
+                logger.warning("No se pudo limpiar una foto del Bonche.")
+
+    return {
+        "success": True,
+        "message": "Bonche eliminado correctamente."
+    }
 
 
 @app.put("/api/bonches/{bonche_id}/config")
