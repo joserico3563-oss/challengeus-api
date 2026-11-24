@@ -7,3 +7,5 @@ bcrypt
 PyJWT
 python-multipart
 cloudinary
+
+firebase-admin
