@@ -54,10 +54,10 @@ def iso(dt):
 # ------------------------------------------------------------------ nucleo
 
 def votantes_elegibles(db, slot):
-    """Integrantes que ya estaban en el bonche cuando empezo el reto."""
+    """Integrantes que ingresaron al bonche antes de terminar el reto."""
     filas = db.query(IntegranteBoncheModel.usuario_id).filter(
         IntegranteBoncheModel.bonche_id == slot.bonche_id,
-        IntegranteBoncheModel.joined_at <= slot.starts_at,
+        IntegranteBoncheModel.joined_at < slot.ends_at,
     ).all()
     return {f[0] for f in filas}
 
@@ -217,7 +217,22 @@ def procesar_slot(db, slot, ahora=None):
             registrar_recompensa(db, slot_id, uid, evid, "INCUMPLIDA", 0, 0)
             continue
 
-        debe = {eid for eid, dueno in duenos.items() if dueno != uid}
+        ingreso = db.query(IntegranteBoncheModel.joined_at).filter(
+            IntegranteBoncheModel.bonche_id == slot.bonche_id,
+            IntegranteBoncheModel.usuario_id == uid,
+        ).scalar()
+
+        if ingreso is None:
+            continue
+
+        debe = {
+            e.id for e in evs
+            if e.usuario_id != uid
+            and (
+                ingreso <= slot.starts_at
+                or e.submitted_at >= ingreso
+            )
+        }
         if not debe.issubset(hechos.get(uid, set())):
             registrar_recompensa(db, slot_id, uid, evid, "INCUMPLIDA", 0, 0)
             continue
@@ -314,8 +329,8 @@ def listar_pendientes(db, usuario_id, ahora):
     for ev, slot, dueno, reto in filas:
         if ev.id in ya_voto:
             continue
-        if miembro[slot.bonche_id] > slot.starts_at:
-            continue  # entro al bonche despues de que empezo ese reto
+        if miembro[slot.bonche_id] >= slot.ends_at:
+            continue  # ingreso despues del cierre del reto
         if not ev.image_url or ev.image_url.startswith("["):
             continue
         salida.append({

@@ -790,10 +790,10 @@ async def enviar_evidencia(
         raise HTTPException(status_code=403, detail="No perteneces a este bonche.")
 
     ahora = datetime.utcnow()
-    if es_miembro.joined_at and es_miembro.joined_at > slot.starts_at:
+    if es_miembro.joined_at and es_miembro.joined_at >= slot.ends_at:
         raise HTTPException(
             status_code=403,
-            detail="Entraste al bonche despu\u00e9s de que empez\u00f3 este reto. Participas desde el siguiente.",
+            detail="Entraste al bonche cuando este reto ya habia terminado.",
         )
     if ahora < slot.starts_at:
         raise HTTPException(status_code=400, detail="Este reto todavía no empieza.")
@@ -868,11 +868,21 @@ async def enviar_evidencia(
         miembro_actual = db.query(IntegranteBoncheModel).filter(
             IntegranteBoncheModel.bonche_id == slot.bonche_id,
             IntegranteBoncheModel.usuario_id == yo.id,
-            IntegranteBoncheModel.joined_at <= slot.starts_at,
+            IntegranteBoncheModel.joined_at < slot.ends_at,
         ).with_for_update().first()
 
         if grupo_actual is None or miembro_actual is None:
             raise HTTPException(403, "Ya no participas en este reto.")
+
+        from modelos_larecocha import RecompensaModel
+
+        recompensa_existente = db.query(RecompensaModel).filter(
+            RecompensaModel.bonche_reto_id == slot.id,
+            RecompensaModel.usuario_id == yo.id,
+        ).first()
+
+        if recompensa_existente is not None:
+            raise HTTPException(400, "Tu participacion en este reto ya fue procesada.")
 
         nueva = EvidenciaModel(
             id=evidencia_id,

@@ -90,15 +90,15 @@ def _candidatas(db, uid, ahora):
             ).all()
         }
     for slot, reto in activos:
-        if miembro[slot.bonche_id] > slot.starts_at:
-            continue  # entro al bonche despues de que empezo este reto
+        if miembro[slot.bonche_id] >= slot.ends_at:
+            continue
         if slot.id in ya_enviados:
             continue
         agregar(
             f"reto:{slot.id}", NUEVO_RETO, slot.bonche_id,
             "¡Nuevo reto disponible!",
             f"«{reto.title}» ya está activo. ¡A cumplirlo con tu bonche!",
-            slot.id, slot.starts_at,
+            slot.id, max(slot.starts_at, miembro[slot.bonche_id]),
         )
 
     # 2) Evidencias por calificar (una notificacion por reto, no por foto).
