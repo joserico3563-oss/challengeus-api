@@ -63,7 +63,7 @@ en el siguiente orden:
 El esquema contiene 14 tablas con claves primarias,
 claves foraneas, indices y restricciones de unicidad.
 
-Los catalogos contienen 10 retos y 7 articulos de tienda.
+Los catalogos contienen 21 retos y 7 articulos de tienda.
 
 Los datos de prueba incluyen 3 usuarios, 1 Bonche,
 3 evidencias, 6 votaciones y 3 recompensas.

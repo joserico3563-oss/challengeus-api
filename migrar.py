@@ -43,6 +43,17 @@ CATALOGO = [
     ("cat-10", "Cara de mango", "Haz una cara con comida y fotografíala.",
      "Usa frutas, arepas, galletas, lo que haya, para armar una carita con personalidad.",
      "creatividad", "facil"),
+    ('cat-11', 'El man del rebusque', 'Inventa un producto completamente inútil.', 'Invéntate un producto con lo que tengas a la mano y preséntalo como si lo estuvieras vendiendo en televisión. ¡Aprovecha, que se acaba!', 'ingenio', 'medio'),
+    ('cat-12', 'Tremendo cuadro', 'Recrea una pintura famosa, un meme o una portada musical.', 'Recrea la imagen usando lo que tengas cerca. Aquí no hay presupuesto, pero sí talento.', 'creatividad', 'dificil'),
+    ('cat-13', 'Esa vaina tiene cara', 'Encuentra un objeto que parezca tener cara.', 'Mira a tu alrededor y fotografía un objeto que parezca tener rostro. Entre más personalidad tenga esa vaina, mejor.', 'observacion', 'facil'),
+    ('cat-14', 'Aquí entre nos', 'Representa un chisme entre dos objetos.', 'Coloca dos objetos como si estuvieran echándose un chisme. Que la foto cuente la historia sin necesidad de palabras.', 'creatividad', 'facil'),
+    ('cat-15', 'La última neurona', 'Representa cómo te sientes utilizando objetos.', 'Usa lo que tengas cerca para representar cómo te sientes en este momento. Que el Bonche interprete esa vaina.', 'creatividad', 'medio'),
+    ('cat-16', 'Mero susto', 'Recrea tu reacción al creer que perdiste el celular.', 'Pon la cara que pondrías si metes la mano al bolsillo y no encuentras el celular. ¡Nojoda, qué susto!', 'movimiento', 'facil'),
+    ('cat-17', 'El propio famoso', 'Imita la pose característica de un personaje famoso.', 'Imita a un cantante, futbolista o personaje famoso. A ver si el Bonche adivina quién eres.', 'movimiento', 'facil'),
+    ('cat-18', 'El propio sospechoso', 'Tómate una foto estilo cartel de Se busca.', 'Posa como si acabaras de aparecer en un cartel de Se busca. Esa cara de inocente no engaña a nadie, cuadro.', 'movimiento', 'facil'),
+    ('cat-19', 'Mansa aura', 'Captura una pose o situación que desprenda aura.', 'Tírate una pose legendaria o fotografía cualquier vaina que desprenda aura. Aquí se viene a sumar aura, no a perderla.', 'creatividad', 'facil'),
+    ('cat-20', 'Sin mirar, cuadro', 'Dibuja un gato con los ojos cerrados.', 'Cierra los ojos, dibuja un gato y fotografía el resultado. Se acepta cualquier aberración artística.', 'ingenio', 'facil'),
+    ('cat-21', 'El propio coleccionista', 'Fotografía lo más antiguo que lleves contigo.', 'Busca lo más antiguo que tengas contigo en este momento. A ver qué reliquia cargas encima, cuadro.', 'observacion', 'facil'),
 ]
 
 PREMIOS = {"facil": (100, 40, 25), "medio": (150, 60, 40), "dificil": (200, 80, 55)}
