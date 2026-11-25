@@ -57,7 +57,7 @@ def votantes_elegibles(db, slot):
     """Integrantes que ingresaron al bonche antes de terminar el reto."""
     filas = db.query(IntegranteBoncheModel.usuario_id).filter(
         IntegranteBoncheModel.bonche_id == slot.bonche_id,
-        IntegranteBoncheModel.joined_at < slot.ends_at,
+        IntegranteBoncheModel.joined_at < min(slot.ends_at, slot.closed_at or slot.ends_at),
     ).all()
     return {f[0] for f in filas}
 
@@ -124,44 +124,59 @@ def limpiar_fotos(db, evidencias):
 
 
 def registrar_recompensa(db, slot_id, usuario_id, evidencia_id, estado, xp, monedas):
-    try:
-        db.add(RecompensaModel(
-            id=f"rc-{uuid.uuid4().hex[:20]}",
-            bonche_reto_id=slot_id,
-            usuario_id=usuario_id,
-            evidencia_id=evidencia_id,
-            estado=estado,
-            xp=xp,
-            coins=monedas,
-            visto=False,
-            created_at=ahora_utc(),
-        ))
-        db.flush()  # si la fila ya existe, el UNIQUE falla aqui, antes de sumar nada
-        if estado == "PAGADA":
-            db.execute(
-                text(
-                    "UPDATE usuarios SET xp = COALESCE(xp, 0) + :xp, "
-                    "coins = COALESCE(coins, 0) + :c, "
-                    "completed_challenges = COALESCE(completed_challenges, 0) + 1 "
-                    "WHERE id = :u"
-                ),
-                {"xp": xp, "c": monedas, "u": usuario_id},
-            )
-        db.commit()
-        return True
-    except IntegrityError:
-        db.rollback()
-        return False
+    db.add(RecompensaModel(
+        id=f"rc-{uuid.uuid4().hex[:20]}",
+        bonche_reto_id=slot_id,
+        usuario_id=usuario_id,
+        evidencia_id=evidencia_id,
+        estado=estado,
+        xp=xp,
+        coins=monedas,
+        visto=False,
+        created_at=ahora_utc(),
+    ))
+    db.flush()  # si la fila ya existe, el UNIQUE falla aqui, antes de sumar nada
+    if estado == "PAGADA":
+        db.execute(
+            text(
+                "UPDATE usuarios SET xp = COALESCE(xp, 0) + :xp, "
+                "coins = COALESCE(coins, 0) + :c, "
+                "completed_challenges = COALESCE(completed_challenges, 0) + 1 "
+                "WHERE id = :u"
+            ),
+            {"xp": xp, "c": monedas, "u": usuario_id},
+        )
+    return True
 
 
 def procesar_slot(db, slot, ahora=None):
     """Resuelve evidencias y, si corresponde, cierra el reto y reparte recompensas."""
     ahora = ahora or ahora_utc()
     slot_id = slot.id
-    db.commit()  # snapshot nuevo: ve los votos confirmados por otras peticiones
-    if ahora < slot.starts_at:
+    grupo_id = slot.bonche_id
+    db.commit()
+
+    grupo = db.query(BoncheModel).filter(
+        BoncheModel.id == grupo_id
+    ).with_for_update().first()
+
+    if grupo is None:
+        db.rollback()
         return
-    cierre_total = ahora >= slot.ends_at + VENTANA_VOTO_EXTRA
+
+    ahora = ahora_utc()
+    slot = db.query(BoncheRetoModel).filter(
+        BoncheRetoModel.id == slot_id
+    ).populate_existing().with_for_update().first()
+
+    if slot is None or ahora < slot.starts_at:
+        db.rollback()
+        return
+
+    cierre_total = (
+        slot.closed_at is not None
+        or ahora >= slot.ends_at + VENTANA_VOTO_EXTRA
+    )
 
     evs = db.query(EvidenciaModel).filter(
         EvidenciaModel.bonche_reto_id == slot_id
@@ -171,7 +186,7 @@ def procesar_slot(db, slot, ahora=None):
         return
     for ev in evs:
         resolver_evidencia(db, ev, slot, cierre_total)
-    db.commit()
+    db.flush()
 
     evs = db.query(EvidenciaModel).filter(EvidenciaModel.bonche_reto_id == slot_id).all()
     elegibles = votantes_elegibles(db, slot)
@@ -189,11 +204,23 @@ def procesar_slot(db, slot, ahora=None):
             u in resumen and resumen[u][1] == "APPROVED" for u in elegibles
         )
         if not todos or sin_resolver:
-            return  # el reto sigue abierto: nada se paga todavia
+            db.commit()
+            return  # el reto sigue abierto
 
     reto = db.query(RetoModel).filter(RetoModel.id == slot.reto_id).first()
     if reto is None:
+        db.rollback()
         return
+
+    db.query(BoncheRetoModel).filter(
+        BoncheRetoModel.id == slot_id,
+        BoncheRetoModel.closed_at.is_(None),
+    ).update(
+        {BoncheRetoModel.closed_at: ahora},
+        synchronize_session=False,
+    )
+    db.flush()
+
     xp_base = reto.xp_reward or 0
     coins_base = reto.coin_reward or 0
 
@@ -240,6 +267,8 @@ def procesar_slot(db, slot, ahora=None):
             registrar_recompensa(db, slot_id, uid, evid, "PAGADA", xp_base, coins_base)
         else:
             registrar_recompensa(db, slot_id, uid, evid, "PAGADA", xp_base // 2, coins_base // 2)
+
+    db.commit()
 
     limpiar_fotos(
         db,
@@ -318,6 +347,7 @@ def listar_pendientes(db, usuario_id, ahora):
         .join(RetoModel, RetoModel.id == BoncheRetoModel.reto_id)
         .filter(
             EvidenciaModel.status == "SUBMITTED",
+            BoncheRetoModel.closed_at.is_(None),
             EvidenciaModel.usuario_id != usuario_id,
             BoncheRetoModel.bonche_id.in_(list(miembro.keys())),
             BoncheRetoModel.ends_at > ahora - VENTANA_VOTO_EXTRA,
@@ -455,16 +485,50 @@ def registrar_rutas(app, usuario_actual, get_db, usuario_dict):
         ahora = ahora_utc()
         db.commit()
 
+        referencia = db.query(EvidenciaModel.bonche_reto_id).filter(
+            EvidenciaModel.id == data.evidence_id
+        ).scalar()
+
+        db.commit()
+
+        if referencia is None:
+            raise HTTPException(404, "Evidencia no encontrada.")
+
+        grupo_id = db.query(BoncheRetoModel.bonche_id).filter(
+            BoncheRetoModel.id == referencia
+        ).scalar()
+
+        db.commit()
+
+        grupo = db.query(BoncheModel).filter(
+            BoncheModel.id == grupo_id
+        ).with_for_update().first()
+
+        if grupo is None:
+            db.rollback()
+            raise HTTPException(404, "Bonche no encontrado.")
+
+        slot = db.query(BoncheRetoModel).filter(
+            BoncheRetoModel.id == referencia
+        ).populate_existing().with_for_update().first()
+
+        if slot is None or slot.closed_at is not None:
+            db.rollback()
+            raise HTTPException(400, "Este reto ya finalizo.")
+
         ev = db.query(EvidenciaModel).filter(
             EvidenciaModel.id == data.evidence_id
-        ).with_for_update().first()
+        ).populate_existing().with_for_update().first()
         if ev is None or not ev.bonche_reto_id:
             db.rollback()
             raise HTTPException(status_code=404, detail="Evidencia no encontrada.")
-        slot = db.query(BoncheRetoModel).filter(BoncheRetoModel.id == ev.bonche_reto_id).first()
+        ahora = ahora_utc()
         if slot is None:
             db.rollback()
             raise HTTPException(status_code=404, detail="Reto no encontrado.")
+        if slot.closed_at is not None:
+            db.rollback()
+            raise HTTPException(400, "Este reto ya finalizo.")
         if ev.usuario_id == uid:
             db.rollback()
             raise HTTPException(status_code=403, detail="No puedes calificar tu propia evidencia.")
@@ -587,6 +651,7 @@ def registrar_rutas(app, usuario_actual, get_db, usuario_dict):
                 ev is not None
                 and ev.status == "REJECTED"
                 and intentos.get(sid, 0) < MAX_INTENTOS
+                and slots[sid].closed_at is None
                 and ahora < slots[sid].ends_at
                 and recompensas.get(sid) is None
             )
@@ -598,6 +663,7 @@ def registrar_rutas(app, usuario_actual, get_db, usuario_dict):
                 "submittedCount": int(conteo.get(sid, 0)),
                 "attempts": intentos.get(sid, 0),
                 "canRetry": bool(puede),
+                "closed": slots[sid].closed_at is not None,
             })
         return salida
 

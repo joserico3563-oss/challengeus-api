@@ -123,6 +123,7 @@ class BoncheRetoModel(Base):
     slot = Column(Integer, nullable=False)
     starts_at = Column(DateTime, nullable=False)
     ends_at = Column(DateTime, nullable=False)
+    closed_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint('bonche_id', 'fecha', 'slot', name='uq_bonche_fecha_slot'),

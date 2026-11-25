@@ -285,7 +285,7 @@ class JoinBonche(BaseModel):
 
 @app.post("/api/bonches/join")
 def unirse_bonche(data: JoinBonche, yo: UsuarioModel = Depends(usuario_actual), db: Session = Depends(get_db)):
-    bonche = db.query(BoncheModel).filter(BoncheModel.invite_code == data.invite_code.strip().upper()).first()
+    bonche = db.query(BoncheModel).filter(BoncheModel.invite_code == data.invite_code.strip().upper()).with_for_update().first()
     if not bonche:
         raise HTTPException(status_code=404, detail="Código de invitación inválido.")
 
@@ -789,6 +789,9 @@ async def enviar_evidencia(
     if not es_miembro:
         raise HTTPException(status_code=403, detail="No perteneces a este bonche.")
 
+    if slot.closed_at is not None:
+        raise HTTPException(400, "Este reto ya finalizo. Participa en el siguiente.")
+
     ahora = datetime.utcnow()
     if es_miembro.joined_at and es_miembro.joined_at >= slot.ends_at:
         raise HTTPException(
@@ -873,6 +876,16 @@ async def enviar_evidencia(
 
         if grupo_actual is None or miembro_actual is None:
             raise HTTPException(403, "Ya no participas en este reto.")
+
+        slot_actual = db.query(BoncheRetoModel).filter(
+            BoncheRetoModel.id == bonche_reto_id
+        ).populate_existing().with_for_update().first()
+
+        if slot_actual is None or slot_actual.closed_at is not None:
+            raise HTTPException(400, "Este reto ya finalizo.")
+
+        if datetime.utcnow() >= slot_actual.ends_at:
+            raise HTTPException(400, "El plazo para enviar evidencias ya cerro.")
 
         from modelos_larecocha import RecompensaModel
 

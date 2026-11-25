@@ -78,6 +78,7 @@ def _candidatas(db, uid, ahora):
             BoncheRetoModel.bonche_id.in_(bonches),
             BoncheRetoModel.starts_at <= ahora,
             BoncheRetoModel.ends_at > ahora,
+            BoncheRetoModel.closed_at.is_(None),
         )
         .all()
     )
